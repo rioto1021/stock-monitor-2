@@ -4,4 +4,4 @@ pandas
 numpy
 yfinance
 requests
-pandas-ta-quant
+git+https://github.com/twopirllc/pandas-ta.git
