@@ -136,14 +136,12 @@ def monitor_loop():
                         macd_trend = "強気 (Bullish)" if macd_line > macd_signal else "弱気 (Bearish)"
 
                         company_name = get_company_name(ticker)
-
+                        
                         msg = (
-                            f"**【新規データ更新】{company_name}** (`{ticker}`)\n"
-                            f"⏱ 日時: {latest_time}\n"
-                            f"・終値: {close_price:.1f}\n"
-                            f"・SAR: {sar_value:.1f} ({trend})\n"
-                            f"・MACD: {macd_line:.2f} / Signal: {macd_signal:.2f} ({macd_trend})\n"
-                            f"・Histogram: {macd_hist:.2f}"
+                            f"🏢 **{company_name}** (`{ticker}`) | ⏱ {latest_time}\n"
+                            f"💵 終値: {close_price:.1f} | 📍 SAR: {sar_value:.1f} ({trend}) | 📉 Hist: {macd_hist:.2f}\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📊 MACD: `{macd_line:.2f}` / Signal: `{macd_signal:.2f}` (**{macd_trend}**)"
                         )
                         
                         send_discord_message(msg)
