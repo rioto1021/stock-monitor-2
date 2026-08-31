@@ -56,17 +56,30 @@ def get_30m_data(ticker_symbol):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     
+    # 欠損値（NaN）の補填処理を入れる（これがPSAR破綻を防ぐキー）
+    df = df.ffill().bfill()
+    
     # 単一の Series として抽出して変換
     high_s = df['High'].squeeze()
     low_s = df['Low'].squeeze()
     close_s = df['Close'].squeeze()
     
     # --- ta ライブラリによる計算 ---
-    # PSARの計算
-    psar_indicator = ta.trend.PSARIndicator(high=high_s, low=low_s, close=close_s, step=0.02, max_step=0.2)
-    df['PSARl_0.02_0.2'] = psar_indicator.psar_down_indicator() # 上昇トレンド時の値
-    df['PSARs_0.02_0.2'] = psar_indicator.psar_up_indicator()   # 下降トレンド時の値
-
+    # --- PSAR の計算 ---
+    psar_indicator = ta.trend.PSARIndicator(
+        high=high_s, 
+        low=low_s, 
+        close=close_s, 
+        step=0.02, 
+        max_step=0.2
+    )
+    
+    # トレンドごとのドット（SAR値）を取得
+    df['PSAR_down'] = psar_indicator.psar_down() # 上昇トレンド時のサポートSAR（価格の下）
+    df['PSAR_up'] = psar_indicator.psar_up()     # 下降トレンド時のレジスタンスSAR（価格の上）
+    df['PSAR_indicator'] = psar_indicator.psar() # 全体のSAR値
+    
+    
     # MACDの計算
     macd_indicator = ta.trend.MACD(close=close_s, window_slow=26, window_fast=12, window_sign=9)
     df['MACD_12_26_9'] = macd_indicator.macd()
@@ -93,21 +106,30 @@ def monitor_loop():
                     
                     last_time = monitor_status["last_processed_times"].get(ticker)
 
-                    if last_time != latest_time:
+                if last_time != latest_time:
                         close_price = float(latest_row['Close'])
-                        sar_val = float(latest_row.get('PSAR', np.nan))
+                        
+                        psar_down_val = latest_row.get('PSAR_down', np.nan)
+                        psar_up_val = latest_row.get('PSAR_up', np.nan)
+                        psar_general = latest_row.get('PSAR_indicator', np.nan)
 
-                        if not np.isnan(sar_val) and sar_val > 0:
-                            sar_value = sar_val
-                            # 終値がSARより上なら「上昇」、下なら「下降」
-                            if close_price >= sar_value:
-                                trend = "上昇 (Long)"
-                            else:
-                                trend = "下降 (Short)"
+                        # PSAR_downに値があれば上昇トレンド（価格の下にSAR）
+                        if not np.isnan(psar_down_val) and psar_down_val > 0:
+                            sar_value = float(psar_down_val)
+                            trend = "上昇 (Long)"
+                        # PSAR_upに値があれば下降トレンド（価格の上にSAR）
+                        elif not np.isnan(psar_up_val) and psar_up_val > 0:
+                            sar_value = float(psar_up_val)
+                            trend = "下降 (Short)"
+                        # 万が一両方NaNだが全体値がある場合
+                        elif not np.isnan(psar_general) and psar_general > 0:
+                            sar_value = float(psar_general)
+                            trend = "上昇 (Long)" if close_price >= sar_value else "下降 (Short)"
                         else:
-                            sar_value = close_price  # 万が一計算できない場合は終値で代用
-                            trend = "判定不能"
-                                        
+                            # それでも取得できない場合のみログを出して前回値を維持
+                            sar_value = 0.0
+                            trend = "計算エラー"
+
                         macd_line = latest_row.get('MACD_12_26_9', np.nan)
                         macd_signal = latest_row.get('MACDs_12_26_9', np.nan)
                         macd_hist = latest_row.get('MACDh_12_26_9', np.nan)
@@ -118,7 +140,7 @@ def monitor_loop():
                         msg = (
                             f"**【新規データ更新】{company_name}** (`{ticker}`)\n"
                             f"⏱ 日時: {latest_time}\n"
-                            f"・終値: {latest_row['Close']:.1f}\n"
+                            f"・終値: {close_price:.1f}\n"
                             f"・SAR: {sar_value:.1f} ({trend})\n"
                             f"・MACD: {macd_line:.2f} / Signal: {macd_signal:.2f} ({macd_trend})\n"
                             f"・Histogram: {macd_hist:.2f}"
