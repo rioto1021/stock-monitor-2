@@ -1,37 +1,32 @@
 from flask import Flask, render_template_string, request, redirect, url_for
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
 import yfinance as yf
 import time
 import requests
 import threading
+import os
+import ta  # pandas_ta の代わりに安定版 ta を使用
 
 app = Flask(__name__)
 
-# --- 設定パラメータ ---
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1543911651118415952/Uqv8CRJru__uscdMGXG_rAIHHXqOCMTTpgUjuhc9Pr852h635HUL1QWDi_5pfjkleL9a"
 
-# 監視状態を管理するグローバル変数
 monitor_status = {
     "is_running": False,
-    "tickers": ["285A.T", "6981.T"],  # 初期対象銘柄のリスト
-    "last_processed_times": {},     # 銘柄ごとの最終処理タイムスタンプ
+    "tickers": ["285A.T", "6981.T"],
+    "last_processed_times": {},
     "logs": []
 }
 
-# 企業名のキャッシュ用辞書
 company_names_cache = {}
 
-
 def add_log(message):
-    """画面表示用のログ履歴を更新（最新50件のみ保持）"""
     monitor_status["logs"].insert(0, f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}")
     if len(monitor_status["logs"]) > 50:
         monitor_status["logs"].pop()
 
 def send_discord_message(message):
-    """Discord の Webhook へメッセージを送信する関数"""
     payload = {"content": message}
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
@@ -40,17 +35,11 @@ def send_discord_message(message):
         add_log(f"Discord 送信エラー: {e}")
 
 def get_company_name(ticker_symbol):
-    """
-    yfinance を使用して銘柄の企業名（shortName または longName）を取得する関数
-    """
-    # すでに取得済みならキャッシュから返す
     if ticker_symbol in company_names_cache:
         return company_names_cache[ticker_symbol]
-    
     try:
         ticker_obj = yf.Ticker(ticker_symbol)
         info = ticker_obj.info
-        # shortName または longName を取得（取得できない場合は ticker コードを代替とする）
         name = info.get('shortName') or info.get('longName') or ticker_symbol
         company_names_cache[ticker_symbol] = name
         return name
@@ -59,24 +48,29 @@ def get_company_name(ticker_symbol):
         return ticker_symbol
 
 def get_30m_data(ticker_symbol):
-    """指定した銘柄の30分足データを取得"""
     df = yf.download(ticker_symbol, period="1mo", interval="30m", progress=False)
     
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-        
     if df.empty:
         return None
-    
-    psar = df.ta.psar(af0=0.02, af=0.02, max_af=0.2)
-    macd = df.ta.macd(fast=12, slow=26, signal=9)
-    
-    df = pd.concat([df, psar, macd], axis=1)
+        
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    # --- ta ライブラリによる計算 ---
+    # PSARの計算
+    psar_indicator = ta.trend.PSARIndicator(high=df['High'], low=df['Low'], close=df['Close'], step=0.02, max_step=0.2)
+    df['PSARl_0.02_0.2'] = psar_indicator.psar_down_indicator() # 上昇トレンド時の値
+    df['PSARs_0.02_0.2'] = psar_indicator.psar_up_indicator()   # 下降トレンド時の値
+
+    # MACDの計算
+    macd_indicator = ta.trend.MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
+    df['MACD_12_26_9'] = macd_indicator.macd()
+    df['MACDs_12_26_9'] = macd_indicator.macd_signal()
+    df['MACDh_12_26_9'] = macd_indicator.macd_diff()
+
     return df
 
-# --- 監視バックグラウンド処理 ---
 def monitor_loop():
-    """複数銘柄の監視ループ（別スレッドで動作）"""
     ticker_list_str = ", ".join(monitor_status["tickers"])
     add_log(f"監視を開始しました。（対象銘柄: {ticker_list_str}）")
     
@@ -92,7 +86,6 @@ def monitor_loop():
                     latest_time = df_30m.index[-1]
                     latest_row = df_30m.iloc[-1]
                     
-                    # 銘柄ごとの最終処理時刻と比較
                     last_time = monitor_status["last_processed_times"].get(ticker)
 
                     if last_time != latest_time:
@@ -114,10 +107,8 @@ def monitor_loop():
                         macd_hist = latest_row.get('MACDh_12_26_9', np.nan)
                         macd_trend = "強気 (Bullish)" if macd_line > macd_signal else "弱気 (Bearish)"
 
-                        # 企業名を取得
                         company_name = get_company_name(ticker)
 
-                        # 送信メッセージ構築
                         msg = (
                             f"**【新規データ更新】{company_name}** (`{ticker}`)\n"
                             f"⏱ 日時: {latest_time}\n"
@@ -130,18 +121,15 @@ def monitor_loop():
                         send_discord_message(msg)
                         add_log(f"[{ticker}] 新規更新・通知完了 ({latest_time})")
                         
-                        # 該当銘柄のタイムスタンプ更新
                         monitor_status["last_processed_times"][ticker] = latest_time
                         
             except Exception as e:
                 add_log(f"[{ticker}] 監視処理エラー: {e}")
                 
-        # 銘柄を一巡後、次の取得まで30秒待機
         time.sleep(30)
         
     add_log("監視を停止しました。")
 
-# --- HTML テンプレート ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ja">
@@ -164,7 +152,6 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <h2>📈 複数銘柄監視コントロールパネル</h2>
-    
     <div class="card">
         <p>現在のステータス: 
             {% if status.is_running %}
@@ -173,7 +160,6 @@ HTML_TEMPLATE = """
                 <span class="status stopped">停止中</span>
             {% endif %}
         </p>
-
         <form action="/action" method="POST">
             <p>
                 <label><b>監視対象銘柄コード (カンマ区切り):</b></label><br>
@@ -189,7 +175,6 @@ HTML_TEMPLATE = """
             </div>
         </form>
     </div>
-
     <div class="card" style="max-width: 850px;">
         <h3>実行ログ</h3>
         <div class="log-box">
@@ -202,7 +187,6 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- Flask ルーティング ---
 @app.route("/")
 def index():
     return render_template_string(HTML_TEMPLATE, status=monitor_status)
@@ -210,24 +194,19 @@ def index():
 @app.route("/action", methods=["POST"])
 def handle_action():
     action = request.form.get("btn_action")
-    
     if action == "start" and not monitor_status["is_running"]:
         raw_tickers = request.form.get("tickers", "")
-        # カンマ区切りの文字列をリスト化（空文字や余分なスペースの除外）
         ticker_list = [t.strip() for t in raw_tickers.split(",") if t.strip()]
-        
         if ticker_list:
             monitor_status["tickers"] = ticker_list
             monitor_status["is_running"] = True
             monitor_status["last_processed_times"] = {}
-            
             thread = threading.Thread(target=monitor_loop, daemon=True)
             thread.start()
-            
     elif action == "stop" and monitor_status["is_running"]:
         monitor_status["is_running"] = False
-        
     return redirect(url_for("index"))
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

@@ -1,7 +1,7 @@
 Flask
 gunicorn
-pandas==2.2.2
-numpy==1.26.4
+pandas
+numpy
 yfinance
 requests
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/main.zip
+ta
