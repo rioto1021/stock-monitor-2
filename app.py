@@ -55,15 +55,20 @@ def get_30m_data(ticker_symbol):
         
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-
+    
+    # 単一の Series として抽出して変換
+    high_s = df['High'].squeeze()
+    low_s = df['Low'].squeeze()
+    close_s = df['Close'].squeeze()
+    
     # --- ta ライブラリによる計算 ---
     # PSARの計算
-    psar_indicator = ta.trend.PSARIndicator(high=df['High'], low=df['Low'], close=df['Close'], step=0.02, max_step=0.2)
+    psar_indicator = ta.trend.PSARIndicator(high=high_s, low=low_s, close=close_s, step=0.02, max_step=0.2)
     df['PSARl_0.02_0.2'] = psar_indicator.psar_down_indicator() # 上昇トレンド時の値
     df['PSARs_0.02_0.2'] = psar_indicator.psar_up_indicator()   # 下降トレンド時の値
 
     # MACDの計算
-    macd_indicator = ta.trend.MACD(close=df['Close'], window_slow=26, window_fast=12, window_sign=9)
+    macd_indicator = ta.trend.MACD(close=close_s, window_slow=26, window_fast=12, window_sign=9)
     df['MACD_12_26_9'] = macd_indicator.macd()
     df['MACDs_12_26_9'] = macd_indicator.macd_signal()
     df['MACDh_12_26_9'] = macd_indicator.macd_diff()
@@ -89,17 +94,18 @@ def monitor_loop():
                     last_time = monitor_status["last_processed_times"].get(ticker)
 
                     if last_time != latest_time:
-                        psar_long = latest_row.get('PSARl_0.02_0.2', np.nan)
-                        psar_short = latest_row.get('PSARs_0.02_0.2', np.nan)
-                        
-                        if not np.isnan(psar_long):
-                            sar_value = psar_long
-                            trend = "上昇 (Long)"
-                        elif not np.isnan(psar_short):
-                            sar_value = psar_short
-                            trend = "下降 (Short)"
+                        close_price = float(latest_row['Close'])
+                        sar_val = float(latest_row.get('PSAR', np.nan))
+
+                        if not np.isnan(sar_val) and sar_val > 0:
+                            sar_value = sar_val
+                            # 終値がSARより上なら「上昇」、下なら「下降」
+                            if close_price >= sar_value:
+                                trend = "上昇 (Long)"
+                            else:
+                                trend = "下降 (Short)"
                         else:
-                            sar_value = 0.0
+                            sar_value = close_price  # 万が一計算できない場合は終値で代用
                             trend = "判定不能"
                                         
                         macd_line = latest_row.get('MACD_12_26_9', np.nan)
