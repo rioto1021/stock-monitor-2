@@ -48,23 +48,24 @@ def get_company_name(ticker_symbol):
         return ticker_symbol
 
 def get_30m_data(ticker_symbol):
+    # 期間を少し長め(1mo)に取って計算に必要なデータを十分に確保
     df = yf.download(ticker_symbol, period="1mo", interval="30m", progress=False)
     
-    if df.empty:
+    if df.empty or len(df) < 10:
         return None
         
+    # MultiIndex の完全なフラット化
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    
+
     # 欠損値（NaN）の補填処理を入れる（これがPSAR破綻を防ぐキー）
     df = df.ffill().bfill()
-    
-    # 単一の Series として抽出して変換
+
+    # 1次元の Series として抽出
     high_s = df['High'].squeeze()
     low_s = df['Low'].squeeze()
     close_s = df['Close'].squeeze()
-    
-    # --- ta ライブラリによる計算 ---
+
     # --- PSAR の計算 ---
     psar_indicator = ta.trend.PSARIndicator(
         high=high_s, 
@@ -78,9 +79,8 @@ def get_30m_data(ticker_symbol):
     df['PSAR_down'] = psar_indicator.psar_down() # 上昇トレンド時のサポートSAR（価格の下）
     df['PSAR_up'] = psar_indicator.psar_up()     # 下降トレンド時のレジスタンスSAR（価格の上）
     df['PSAR_indicator'] = psar_indicator.psar() # 全体のSAR値
-    
-    
-    # MACDの計算
+
+    # --- MACD の計算 ---
     macd_indicator = ta.trend.MACD(close=close_s, window_slow=26, window_fast=12, window_sign=9)
     df['MACD_12_26_9'] = macd_indicator.macd()
     df['MACDs_12_26_9'] = macd_indicator.macd_signal()
